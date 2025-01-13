@@ -9,24 +9,48 @@ import {
 } from './api.js';
 
 export class AccountManager {
-    constructor(token, proxy, accountIndex) {
+    constructor(token, proxy, accountIndex, proxyManager) {
         this.token = token;
         this.proxy = proxy;
         this.accountIndex = accountIndex;
+        this.proxyManager = proxyManager;
         this.nodes = [];
         this.wsClients = [];
+        this.intervals = new Set();
+    }
+
+    async handleProxyFailure() {
+        if (!this.proxy) return null;
+        
+        this.proxyManager.markProxyAsFailed(this.proxy);
+        this.proxy = this.proxyManager.getRandomProxy();
+        log.info(`🔄 [Account #${this.accountIndex}] Switching to new proxy: ${this.proxy ? this.proxy.split("@").pop() : 'Direct Connection'}`);
+        return this.proxy;
     }
 
     async initialize() {
         try {
             log.info(`🔍 [Account #${this.accountIndex}] Searching for registered nodes...`);
-            this.nodes = await getUserNode(this.token, this.proxy, this.accountIndex);
+            this.nodes = await getUserNode(this.token, this.proxy, this.accountIndex).catch(async error => {
+                if (error.code === 'ECONNREFUSED' || error.code === 'ETIMEDOUT') {
+                    this.proxy = await this.handleProxyFailure();
+                    return getUserNode(this.token, this.proxy, this.accountIndex);
+                }
+                throw error;
+            });
             
             if (!this.nodes) return false;
             
             if (this.nodes.length === 0) {
                 log.info(`🌱 [Account #${this.accountIndex}] No nodes found, creating new node...`);
-                const uuid = await registerNode(this.token, this.proxy);
+                const uuid = await registerNode(this.token, this.proxy).catch(async error => {
+                    if (error.code === 'ECONNREFUSED' || error.code === 'ETIMEDOUT') {
+                        this.proxy = await this.handleProxyFailure();
+                        return registerNode(this.token, this.proxy);
+                    }
+                    throw error;
+                });
+
                 if (!uuid) {
                     log.error(`❌ [Account #${this.accountIndex}] Failed to register node - skipping WebSocket connection.`);
                     return false;
@@ -34,7 +58,15 @@ export class AccountManager {
                 this.nodes = [uuid];
             } else {
                 log.info(`✨ [Account #${this.accountIndex}] Found ${this.nodes.length} active nodes!`);
-                await Promise.all(this.nodes.map(node => registerNode(this.token, this.proxy, node)));
+                await Promise.all(this.nodes.map(node => 
+                    registerNode(this.token, this.proxy, node).catch(async error => {
+                        if (error.code === 'ECONNREFUSED' || error.code === 'ETIMEDOUT') {
+                            this.proxy = await this.handleProxyFailure();
+                            return registerNode(this.token, this.proxy, node);
+                        }
+                        throw error;
+                    })
+                ));
             }
 
             await this.setupServices();
@@ -63,10 +95,11 @@ export class AccountManager {
     }
 
     setupUserInfoInterval() {
-        setInterval(async () => {
+        const interval = setInterval(async () => {
             const users = await getUserInfo(this.token);
             log.info(`📊 [Account #${this.accountIndex}] Update: ${this.nodes.length} Node | ${users.name} | Level ${users.levels} | ${users.currentPoint} Points`);
         }, 11 * 60 * 1000);
+        this.intervals.add(interval);
     }
 
     async setupWebSocketConnections() {
@@ -77,16 +110,17 @@ export class AccountManager {
             client.connect();
             this.wsClients.push(client);
 
-            setInterval(() => {
+            const interval = setInterval(() => {
                 log.info(`🔄 [Account #${this.accountIndex}] Refreshing node ${shortNodeId} connection...`);
                 client.disconnect();
             }, 10 * 60 * 1000);
+            this.intervals.add(interval);
         }));
     }
 
     async setupQuestChecking() {
         await checkQuests(this.token, this.proxy);
-        setInterval(async () => {
+        const interval = setInterval(async () => {
             try {
                 log.info(`🎯 [Account #${this.accountIndex}] Checking for new quests...`);
                 await checkQuests(this.token, this.proxy);
@@ -94,10 +128,39 @@ export class AccountManager {
                 log.error(`⚠️ [Account #${this.accountIndex}] Failed to check quests: ${error.message}`);
             }
         }, 24 * 60 * 60 * 1000);
+        this.intervals.add(interval);
     }
 
     async logUserInfo() {
         const users = await getUserInfo(this.token, this.proxy);
         log.info(`📱 [Account #${this.accountIndex}] Info: ${this.nodes.length} Node | ${users.name} | Level ${users.levels} | ${users.currentPoint} Points`);
+    }
+
+    async cleanup() {
+        log.info(`🧹 [Account #${this.accountIndex}] Starting cleanup...`);
+        
+        // Clear all intervals
+        for (const interval of this.intervals) {
+            clearInterval(interval);
+        }
+        this.intervals.clear();
+        
+        // Cleanup WebSocket connections
+        await Promise.all(this.wsClients.map(async client => {
+            client.shouldReconnect = false; // Prevent auto reconnect
+            return new Promise(resolve => {
+                if (client.socket) {
+                    client.socket.once('close', resolve);
+                    client.disconnect();
+                } else {
+                    resolve();
+                }
+            });
+        }));
+        
+        this.wsClients = [];
+        this.nodes = [];
+        
+        log.info(`✨ [Account #${this.accountIndex}] Cleanup completed`);
     }
 } 

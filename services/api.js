@@ -4,6 +4,11 @@ import log from '../utils/logger.js';
 import { headers } from '../config/headers.js';
 import { API_ENDPOINTS } from '../config/api.js';
 import { newAgent } from '../utils/proxy.js';
+import { RateLimiter } from '../utils/rateLimit.js';
+
+// Global configuration
+const REQUEST_TIMEOUT = 30000; // 30 seconds
+const rateLimiter = new RateLimiter(10, 1000); // 10 requests per second
 
 export async function registerNode(token, proxy = null, node = null) {
     const agent = newAgent(proxy)
@@ -19,6 +24,7 @@ export async function registerNode(token, proxy = null, node = null) {
 
     while (retries < maxRetries) {
         try {
+            await rateLimiter.checkLimit();
             const response = await axios.post(
                 API_ENDPOINTS.REGISTER_NODE,
                 payload,
@@ -28,19 +34,24 @@ export async function registerNode(token, proxy = null, node = null) {
                         "Authorization": `Bearer ${token}`,
                     },
                     agent: agent,
+                    timeout: REQUEST_TIMEOUT,
                 }
             );
 
-            log.info("Node registered successfully:", response.data);
+            log.info(`✅ Node ${uuid.substring(0, 8)} registered successfully`);
             return uuid;
         } catch (error) {
-            log.error("Error registering node:", error.message);
+            const errorMsg = error.code === 'ECONNABORTED' 
+                ? 'Request timeout' 
+                : error.message;
+            log.error(`❌ Error registering node: ${errorMsg}`);
             retries++;
             if (retries < maxRetries) {
-                log.info("Retrying in 10 seconds...");
-                await new Promise(resolve => setTimeout(resolve, 10000));
+                const waitTime = 10000 * retries; // Exponential backoff
+                log.info(`⏳ Retrying in ${waitTime/1000} seconds...`);
+                await new Promise(resolve => setTimeout(resolve, waitTime));
             } else {
-                log.error("Max retries exceeded; giving up on registration.");
+                log.error("❌ Max retries exceeded; giving up on registration.");
                 return null;
             }
         }
@@ -140,23 +151,29 @@ export async function getUserInfo(token, proxy = null) {
 
     while (retries < maxRetries) {
         try {
+            await rateLimiter.checkLimit();
             const response = await axios.get(API_ENDPOINTS.GET_USER_INFO, {
                 headers: {
                     ...headers,
                     "Authorization": `Bearer ${token}`,
                 },
                 agent: agent,
+                timeout: REQUEST_TIMEOUT,
             });
             const { name, status, _id, levels, currentPoint } = response.data.data;
             return { name, status, _id, levels, currentPoint };
         } catch (error) {
             retries++;
+            const errorMsg = error.code === 'ECONNABORTED' 
+                ? 'Request timeout' 
+                : error.message;
             if (retries < maxRetries) {
-                log.info("Retrying in 10 seconds...");
-                await new Promise(resolve => setTimeout(resolve, 10000));
+                const waitTime = 10000 * retries; // Exponential backoff
+                log.info(`⏳ Retrying in ${waitTime/1000} seconds...`);
+                await new Promise(resolve => setTimeout(resolve, waitTime));
             } else {
-                log.error("Max retries exceeded; giving up on getting user info.");
-                return { error: error.message };
+                log.error("❌ Max retries exceeded; giving up on getting user info.");
+                return { error: errorMsg };
             }
         }
     }
