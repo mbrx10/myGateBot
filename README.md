@@ -83,14 +83,14 @@ There are two ways to obtain your MyGate Network token:
 
 ### Method 1: Using Network Tab
 ![alt text](image.png)
-1. Login to [MyGate Network](https://app.mygate.network/login?code=eFhTNd)
+1. Login to [MyGate Network](https://app.mygate.network/login?code=oKGZ2W)
 2. Open Developer Tools (F12 or Right Click > Inspect)
 3. Go to the Network tab
 4. Look for API responses containing the authentication token
 5. Copy the token from the response header or body
 
 ### Method 2: Using Console
-1. Login to [MyGate Network](https://app.mygate.network/login?code=eFhTNd)
+1. Login to [MyGate Network](https://app.mygate.network/login?code=oKGZ2W)
 2. Open Developer Tools (F12 or Right Click > Inspect)
 3. Go to the Console tab
 4. Paste and run the following code:
